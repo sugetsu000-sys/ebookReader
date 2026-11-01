@@ -1,0 +1,69 @@
+name: ebook Reader APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        run: |
+          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Extract source ZIP
+        run: |
+          mkdir -p extracted
+          ZIP=$(find . -maxdepth 2 -name 'LumenReader-GitHub-Build.zip' -print -quit)
+          if [ -z "$ZIP" ]; then
+            echo "Source ZIP tidak ditemukan"
+            exit 1
+          fi
+          unzip -o "$ZIP" -d extracted
+
+      - name: Find Android project
+        run: |
+          PROJECT=$(find extracted -name settings.gradle -o -name settings.gradle.kts | head -n 1)
+          if [ -z "$PROJECT" ]; then
+            echo "Gradle Android project tidak ditemukan"
+            find extracted -maxdepth 4 -type f
+            exit 1
+          fi
+          echo "PROJECT_DIR=$(dirname "$PROJECT")" >> "$GITHUB_ENV"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Build APK
+        run: |
+          cd "$PROJECT_DIR"
+          gradle --no-daemon assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: LumenReader-debug-apk
+          path: |
+            **/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
