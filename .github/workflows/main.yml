@@ -1,69 +1,81 @@
-name: ebook Reader APK
+name: Android CI
 
 on:
-  workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:   # bisa dijalankan manual dari tab Actions
 
-permissions:
-  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
+    name: Build & Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Java
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
           java-version: '17'
-
-      - name: Setup Android SDK
-        run: |
-          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
-          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
-          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null
-          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
-
-      - name: Extract source ZIP
-        run: |
-          mkdir -p extracted
-          ZIP=$(find . -maxdepth 2 -name 'LumenReader-GitHub-Build.zip' -print -quit)
-          if [ -z "$ZIP" ]; then
-            echo "Source ZIP tidak ditemukan"
-            exit 1
-          fi
-          unzip -o "$ZIP" -d extracted
-
-      - name: Find Android project
-        run: |
-          PROJECT=$(find extracted -name settings.gradle -o -name settings.gradle.kts | head -n 1)
-          if [ -z "$PROJECT" ]; then
-            echo "Gradle Android project tidak ditemukan"
-            find extracted -maxdepth 4 -type f
-            exit 1
-          fi
-          echo "PROJECT_DIR=$(dirname "$PROJECT")" >> "$GITHUB_ENV"
+          distribution: 'temurin'
+          cache: gradle
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.13'
 
-      - name: Build APK
+      - name: Grant execute permission for gradlew (jika ada)
         run: |
-          cd "$PROJECT_DIR"
-          gradle --no-daemon assembleDebug
+          if [ -f ./gradlew ]; then
+            chmod +x ./gradlew
+          fi
 
-      - name: Upload APK
+      - name: Generate Gradle Wrapper (jika belum ada)
+        run: |
+          if [ ! -f ./gradlew ]; then
+            echo "Gradle Wrapper belum ada, membuat..."
+            gradle wrapper --gradle-version 8.7
+            chmod +x ./gradlew
+          fi
+
+      - name: Cache Android SDK
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.android/build-cache
+            ~/.android/caches
+          key: ${{ runner.os }}-android-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-android-
+
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug --stacktrace --no-daemon
+
+      - name: Run Lint
+        run: ./gradlew lintDebug --stacktrace --no-daemon
+        continue-on-error: true   # lint warning tidak membatalkan CI
+
+      - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: LumenReader-debug-apk
-          path: |
-            **/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
+          name: app-debug
+          path: app/build/outputs/apk/debug/*.apk
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Upload Lint Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-report
+          path: app/build/reports/lint-results-*.html
+          retention-days: 7
+          if-no-files-found: ignore
+          
